@@ -2,8 +2,9 @@
  *  HTTP-to-HTTP 代理（并发版）
  *  适用于 OpenWrt 17.01.7，内存 10 MB，并发 ≤ 50
  *  业务逻辑与原版完全一致，仅增加 fork + 信号量限流
- *  兼容gcc-5.4, gcc-7.4编译通过
  */
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -16,10 +17,7 @@
 #include <stdarg.h>
 #include <sys/select.h>
 #include <sys/wait.h>
-#include <fcntl.h>      // O_CREAT, O_EXCL
-#include <semaphore.h>  // sem_open, sem_t, SEM_FAILED
-#include <stdio.h>      // perror
-#include <stdlib.h>     // exit
+#include <semaphore.h>
 
 #define BUFFER_SIZE   8192
 #define MAX_HEADERS   50
