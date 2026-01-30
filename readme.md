@@ -2,7 +2,7 @@
 
 ## 概述
 
-这是一个 HTTP 到 HTTP/RTSP的代理程序，支持并发处理请求。该程序适用于 OpenWrt 17.01.7 系统，内存要求 10 MB，最大并发数为 50。
+这是一个 HTTP 到 HTTP/HTTPS的代理程序，支持并发处理请求。该程序适用于 OpenWrt 17.01.7 系统，内存要求 10 MB，最大并发数为 50。
 
 ## 用途案例
 
@@ -22,16 +22,15 @@
 - **IPv6地址格式**：`[2409:8a55:41:3280:5a41:20ff:fe08:6065]:8080`
 - **IPv4地址格式**：`192.168.1.1:8080`
 - **主机名格式**：`example.com:8080`
-- **默认端口**：80（HTTP）、443（HTTPS）和554（RTSP）
+- **默认端口**：80（HTTP）、443（HTTPS）
 
 ### 3. 多协议支持
 - **HTTP/HTTPS代理**：标准HTTP和HTTPS请求转发
-- **RTSP代理**：支持RTSP视频流转发
-- **协议自动检测**：通过URL路径和请求方法自动检测协议类型
+- **协议自动检测**：通过URL路径自动检测协议类型
 
 ### 4. 智能目标连接
 - **多协议支持**：优先尝试IPv6，然后回退到IPv4
-- **超时控制**：HTTP请求5秒超时，RTSP请求30秒超时
+- **超时控制**：HTTP请求5秒超时
 - **错误处理**：详细的连接日志
 
 ## 编译
@@ -69,6 +68,7 @@ mipsel-openwrt-linux-musl-gcc -Wall -Os -s -o httpxy-mipsel-dymatic httpxy.c -lp
 - `-p PORT`：指定监听端口（默认8080）
 - `-v`：启用详细日志输出
 - `-6`：只监听IPv6（默认双栈模式）
+- `-h`：显示详细帮助信息（包括版本号、编译时间和参数说明）
 
 ## URL格式支持
 
@@ -95,14 +95,7 @@ http://proxy-server:8080/http://target-server:80/path
 https://proxy-server:8080/http://target-server:443/path
 ```
 
-### 5. RTSP视频流支持
-```
-http://proxy-server:8080/rtsp://target-server:554/path
-http://[ipv6-proxy]:8080/rtsp://10.160.34.254/PLTV/88888888/224/3221227032/458506120.smil
-```
-- 支持RTSP视频流的完整转发
-- 支持IPv6客户端访问IPv4 RTSP服务器
-- 支持所有标准RTSP方法（DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN等）
+
 
 ## 测试示例
 
@@ -125,15 +118,7 @@ wget "http://[your-ipv6-proxy]:8080/http://220.15.16.65/helloword.ts"
 - HTTP代理：`[your-ipv6-proxy-address]:8080`
 - HTTPS代理：`[your-ipv6-proxy-address]:8080`
 
-### 4. RTSP视频流测试
-使用支持RTSP的播放器（如VLC）测试：
-```
-# IPv4客户端访问IPv4 RTSP服务器
-http://192.168.1.201:8080/rtsp://10.160.34.254/PLTV/88888888/224/3221227032/458506120.smil
 
-# IPv6客户端访问IPv4 RTSP服务器
-http://[your-ipv6-proxy]:8080/rtsp://10.160.34.254/PLTV/88888888/224/3221227032/458506120.smil
-```
 
 ## 日志输出
 
@@ -151,25 +136,7 @@ Target->Client: 2048 bytes
 Connection closed
 ```
 
-### RTSP请求日志
-```
-IPv4 Client 192.168.1.100:12345 connected
-Original URL: /rtsp://10.160.34.254/PLTV/88888888/224/3221227032/458506120.smil
-Host port string: '10.160.34.254'
-Parsed - Host: '10.160.34.254', Port: 554, Path: '/PLTV/88888888/224/3221227032/458506120.smil'
-Connected to IPv4 10.160.34.254:554
-Handling RTSP request: 10.160.34.254/PLTV/88888888/224/3221227032/458506120.smil
-Client->Target: 512 bytes  # DESCRIBE request
-Target->Client: 1024 bytes # DESCRIBE response
-Client->Target: 256 bytes  # SETUP request
-Target->Client: 512 bytes  # SETUP response
-Client->Target: 128 bytes  # PLAY request
-Target->Client: 256 bytes  # PLAY response
-Target->Client: 1500 bytes # RTP data
-Target->Client: 1500 bytes # RTP data
-...
-Connection closed
-```
+
 
 ## 性能特点
 
@@ -223,6 +190,12 @@ ssh root@router-ip
   - 为RTSP请求设置更长的超时时间（30秒）
   - 支持所有标准RTSP方法
   - 优化RTSP和HTTP协议的区别处理
+- **v2.3**：修复和优化
+  - 修复HTTPS默认端口问题（现在正确使用443端口）
+  - 添加编译时间自动记录功能
+  - 增强启动信息显示（版本号、编译时间、最大并发数）
+  - 优化-h参数帮助信息
+  - 移除RTSP支持，专注于HTTP/HTTPS代理功能
 
 ## 技术支持
 

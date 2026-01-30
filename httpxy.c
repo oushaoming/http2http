@@ -1,5 +1,5 @@
 /*
- *  HTTP-to-HTTP/RTSP 代理（支持IPv6转发到IPv4）
+ *  HTTP-to-HTTP 代理（支持IPv6转发到IPv4）
  *  支持双栈监听，IPv6客户端可以转发到IPv4目标服务器
  *  适用于 OpenWrt 17.01.7，内存 10 MB，并发 ≤ 50
  *  兼容gcc-5.4, gcc-7.4编译通过
@@ -25,7 +25,10 @@
 #define MAX_HEADERS   50
 #define MAX_URL_LEN   2048
 #define MAX_CONCURRENT 50
-#define VERSION "2.2"
+
+#define VERSION "2.3"
+#define BUILD_DATE __DATE__
+#define BUILD_TIME __TIME__
 
 int verbose = 0;
 
@@ -42,7 +45,7 @@ void log_message(const char* format, ...) {
 
 /*-------------------- 业务代码 --------------------*/
 int parse_http_request(const char* request, char* method, char* url, char* host, int* port);
-char* read_request(int client_sock, int* is_rtsp);
+char* read_http_request(int client_sock);
 int connect_to_target(const char* host, int port);
 void handle_client(int client_sock);
 
@@ -88,17 +91,16 @@ int main(int argc, char *argv[])
         case 'v': verbose = 1; break;
         case '6': ipv6_only = 1; break;  // 新增：IPv6 only模式
         case 'h':
-            printf("HTTP-to-HTTP/RTSP proxy v%s\n", VERSION);
-            printf("Build time: %s %s\n", __DATE__, __TIME__);
+            printf("HTTP Proxy v%s\n", VERSION);
+            printf("Build: %s %s\n", BUILD_DATE, BUILD_TIME);
             printf("Usage: %s [-p port] [-v] [-6] [-h]\n", argv[0]);
-            printf("  -p port: Specify listening port (default: 8080)\n");
+            printf("  -p port: Set proxy port (default: 8080)\n");
             printf("  -v: Enable verbose logging\n");
             printf("  -6: IPv6 only mode (default: dual stack)\n");
             printf("  -h: Show this help message\n");
             exit(0);
         default:
             fprintf(stderr, "Usage: %s [-p port] [-v] [-6] [-h]\n", argv[0]);
-            fprintf(stderr, "  -6: IPv6 only mode (default: dual stack)\n");
             fprintf(stderr, "  -h: Show help message\n");
             exit(1);
         }
@@ -110,6 +112,11 @@ int main(int argc, char *argv[])
     signal(SIGTERM, signal_handler);
     signal(SIGCHLD, sigchld_handler);
     signal(SIGPIPE, SIG_IGN);
+
+    /* 显示版本信息 */
+    printf("HTTP Proxy v%s\n", VERSION);
+    printf("Build: %s %s\n", BUILD_DATE, BUILD_TIME);
+    printf("Max concurrent connections: %d\n\n", MAX_CONCURRENT);
 
     /* 支持双栈的socket创建 */
     int server_sock;
@@ -206,20 +213,11 @@ int parse_http_request(const char* request, char* method, char* url, char* host,
     if (sscanf(request, "%15s %2047s", method, original_url) != 2) return -1;
     log_message("Original URL: %s", original_url);
 
-    /* 支持 /http:// 和 /https:// 和 /rtsp:// */
-    if (strncmp(original_url, "/http://", 8) != 0 && 
-        strncmp(original_url, "/https://", 9) != 0 &&
-        strncmp(original_url, "/rtsp://", 8) != 0) return -1;
+    /* 支持 /http:// 和 /https:// */
+    if (strncmp(original_url, "/http://", 8) != 0 && strncmp(original_url, "/https://", 9) != 0) return -1;
 
-    const char* target_url = NULL;
-    if (strncmp(original_url, "/https://", 9) == 0) {
-        target_url = original_url + 9;
-    } else if (strncmp(original_url, "/rtsp://", 8) == 0) {
-        target_url = original_url + 8;
-    } else {
-        target_url = original_url + 8; // http://
-    }
-    
+    int is_https = (strncmp(original_url, "/https://", 9) == 0);
+    const char* target_url = is_https ? original_url + 9 : original_url + 8;
     const char* slash_pos  = strchr(target_url, '/');
     if (!slash_pos) {
         strncpy(url, "/", MAX_URL_LEN - 1);
@@ -239,6 +237,8 @@ int parse_http_request(const char* request, char* method, char* url, char* host,
 
     log_message("Host port string: '%s'", host_port);
 
+    int default_port = is_https ? 443 : 80;
+
     /* 解析IPv6地址格式 [ipv6:address]:port */
     if (host_port[0] == '[') {
         const char* bracket_end = strchr(host_port, ']');
@@ -253,9 +253,9 @@ int parse_http_request(const char* request, char* method, char* url, char* host,
         /* 检查是否有端口号 */
         if (*(bracket_end + 1) == ':') {
             *port = atoi(bracket_end + 2);
-            if (*port <= 0 || *port > 65535) *port = 80;
+            if (*port <= 0 || *port > 65535) *port = default_port;
         } else {
-            *port = 80;
+            *port = default_port;
         }
     } else {
         /* IPv4地址或普通hostname */
@@ -264,10 +264,10 @@ int parse_http_request(const char* request, char* method, char* url, char* host,
             *colon_pos = '\0';
             strncpy(host, host_port, 255);
             *port = atoi(colon_pos + 1);
-            if (*port <= 0) *port = 80;
+            if (*port <= 0) *port = default_port;
         } else {
             strncpy(host, host_port, 255);
-            *port = 80;
+            *port = default_port;
         }
     }
 
@@ -339,15 +339,14 @@ void handle_client(int client_sock)
 {
     char method[16] = {0}, url[MAX_URL_LEN] = {0}, host[256] = {0};
     int port = 80;
-    int is_rtsp = 0;
 
-    char* request = read_request(client_sock, &is_rtsp);
+    char* request = read_http_request(client_sock);
     if (!request) { close(client_sock); return; }
 
     log_message("Received request:\n%s", request);
 
     if (parse_http_request(request, method, url, host, &port) == -1) {
-        const char* err = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nInvalid proxy URL format. Use: /http://[ipv6:address]:port/path, /https://[ipv6:address]:port/path, or /rtsp://[ipv6:address]:port/path";
+        const char* err = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nInvalid proxy URL format. Use: /http://[ipv6:address]:port/path or /http://ipv4:port/path";
         send(client_sock, err, strlen(err), 0);
         close(client_sock);
         return;
@@ -367,53 +366,39 @@ void handle_client(int client_sock)
         return;
     }
 
-    // 检查原始请求中的协议类型来决定如何处理
-    char original_url[MAX_URL_LEN] = {0};
-    if (sscanf(request, "%15s %2047s", method, original_url) == 2) {
-        // 检查是否是RTSP请求
-        if (is_rtsp || strncmp(original_url, "/rtsp://", 8) == 0) {
-            log_message("Handling RTSP request: %s", original_url + 8);
-            // 直接转发原始请求到目标服务器，不需要修改HTTP头
-            send(target_sock, request, strlen(request), 0);
-        } else {
-            // 处理HTTP/HTTPS请求（原有逻辑）
-            char modified_request[BUFFER_SIZE * 2] = {0};
-            char* headers_end = strstr(request, "\r\n\r\n");
-            if (headers_end) {
-                *headers_end = '\0';
-                char* first_line_end = strstr(request, "\r\n");
-                if (first_line_end) {
-                    *first_line_end = '\0';
-                    snprintf(modified_request, sizeof(modified_request), "%s %s HTTP/1.1\r\n", method, url);
-                    char* line = first_line_end + 2;
-                    while (line && *line) {
-                        char* line_end = strstr(line, "\r\n");
-                        if (line_end) *line_end = '\0';
-                        if (strncasecmp(line, "Host:", 5) != 0 && strncasecmp(line, "Proxy-", 6) != 0) {
-                            strcat(modified_request, line);
-                            strcat(modified_request, "\r\n");
-                        }
-                        if (!line_end) break;
-                        line = line_end + 2;
-                    }
+    /* 构建转发请求 */
+    char modified_request[BUFFER_SIZE * 2] = {0};
+    char* headers_end = strstr(request, "\r\n\r\n");
+    if (headers_end) {
+        *headers_end = '\0';
+        char* first_line_end = strstr(request, "\r\n");
+        if (first_line_end) {
+            *first_line_end = '\0';
+            snprintf(modified_request, sizeof(modified_request), "%s %s HTTP/1.1\r\n", method, url);
+            char* line = first_line_end + 2;
+            while (line && *line) {
+                char* line_end = strstr(line, "\r\n");
+                if (line_end) *line_end = '\0';
+                if (strncasecmp(line, "Host:", 5) != 0 && strncasecmp(line, "Proxy-", 6) != 0) {
+                    strcat(modified_request, line);
+                    strcat(modified_request, "\r\n");
                 }
-            } else {
-                snprintf(modified_request, sizeof(modified_request), "%s %s HTTP/1.1\r\n", method, url);
+                if (!line_end) break;
+                line = line_end + 2;
             }
-            char host_hdr[300];
-            if (port == 80) snprintf(host_hdr, sizeof(host_hdr), "Host: %s\r\n", host);
-            else if (strchr(host, ':')) snprintf(host_hdr, sizeof(host_hdr), "Host: [%s]:%d\r\n", host, port);
-            else snprintf(host_hdr, sizeof(host_hdr), "Host: %s:%d\r\n", host, port);
-            strcat(modified_request, host_hdr);
-            strcat(modified_request, "Connection: close\r\n\r\n");
-            if (headers_end) strcat(modified_request, headers_end + 4);
-
-            send(target_sock, modified_request, strlen(modified_request), 0);
         }
     } else {
-        // 如果无法解析，则直接发送原请求
-        send(target_sock, request, strlen(request), 0);
+        snprintf(modified_request, sizeof(modified_request), "%s %s HTTP/1.1\r\n", method, url);
     }
+    char host_hdr[300];
+    if (port == 80) snprintf(host_hdr, sizeof(host_hdr), "Host: %s\r\n", host);
+    else if (strchr(host, ':')) snprintf(host_hdr, sizeof(host_hdr), "Host: [%s]:%d\r\n", host, port);
+    else snprintf(host_hdr, sizeof(host_hdr), "Host: %s:%d\r\n", host, port);
+    strcat(modified_request, host_hdr);
+    strcat(modified_request, "Connection: close\r\n\r\n");
+    if (headers_end) strcat(modified_request, headers_end + 4);
+
+    send(target_sock, modified_request, strlen(modified_request), 0);
 
     /* 双向转发 */
     fd_set readfds;
@@ -449,14 +434,13 @@ void handle_client(int client_sock)
 
 /*================================================================*/
 /* 其他函数保持不变 --------------------*/
-char* read_request(int client_sock, int* is_rtsp)
+char* read_http_request(int client_sock)
 {
     static char buffer[BUFFER_SIZE * 2];
     char* headers_end = NULL;
     int total_read = 0, content_length = 0;
 
-    // 更长的超时时间，适合RTSP
-    struct timeval tv = {.tv_sec = 30, .tv_usec = 0};
+    struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
     setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
 
     while (total_read < sizeof(buffer) - 1) {
@@ -469,31 +453,16 @@ char* read_request(int client_sock, int* is_rtsp)
     }
     if (!headers_end) return NULL;
 
-    // 检测是否为RTSP请求
-    char method[16] = {0};
-    sscanf(buffer, "%15s", method);
-    if (strcmp(method, "DESCRIBE") == 0 || strcmp(method, "SETUP") == 0 || 
-        strcmp(method, "PLAY") == 0 || strcmp(method, "PAUSE") == 0 || 
-        strcmp(method, "TEARDOWN") == 0 || strcmp(method, "OPTIONS") == 0 ||
-        strcmp(method, "GET_PARAMETER") == 0 || strcmp(method, "SET_PARAMETER") == 0) {
-        *is_rtsp = 1;
-    } else {
-        *is_rtsp = 0;
-    }
-
-    // 对于HTTP请求，读取Content-Length
-    if (!*is_rtsp) {
-        char* cl = strstr(buffer, "Content-Length:");
-        if (cl) content_length = atoi(cl + 15);
-        int body_read = total_read - (headers_end - buffer);
-        int remaining = content_length - body_read;
-        while (remaining > 0 && total_read < sizeof(buffer) - 1) {
-            int r = recv(client_sock, buffer + total_read,
-                        (remaining < sizeof(buffer) - total_read - 1) ? remaining : sizeof(buffer) - total_read - 1, 0);
-            if (r <= 0) break;
-            total_read += r;
-            remaining  -= r;
-        }
+    char* cl = strstr(buffer, "Content-Length:");
+    if (cl) content_length = atoi(cl + 15);
+    int body_read = total_read - (headers_end - buffer);
+    int remaining = content_length - body_read;
+    while (remaining > 0 && total_read < sizeof(buffer) - 1) {
+        int r = recv(client_sock, buffer + total_read,
+                    (remaining < sizeof(buffer) - total_read - 1) ? remaining : sizeof(buffer) - total_read - 1, 0);
+        if (r <= 0) break;
+        total_read += r;
+        remaining  -= r;
     }
     buffer[total_read] = '\0';
     return buffer;
