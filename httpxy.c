@@ -26,7 +26,7 @@
 #define MAX_URL_LEN   2048
 #define MAX_CONCURRENT 50
 
-#define VERSION "2.3"
+#define VERSION "2.4"
 #define BUILD_DATE __DATE__
 #define BUILD_TIME __TIME__
 
@@ -213,11 +213,28 @@ int parse_http_request(const char* request, char* method, char* url, char* host,
     if (sscanf(request, "%15s %2047s", method, original_url) != 2) return -1;
     log_message("Original URL: %s", original_url);
 
-    /* 支持 /http:// 和 /https:// */
-    if (strncmp(original_url, "/http://", 8) != 0 && strncmp(original_url, "/https://", 9) != 0) return -1;
-
-    int is_https = (strncmp(original_url, "/https://", 9) == 0);
-    const char* target_url = is_https ? original_url + 9 : original_url + 8;
+    /* 支持 /http://, /https://, /http/, /https/ */
+    int is_https = 0;
+    const char* target_url = NULL;
+    
+    if (strncmp(original_url, "/https://", 9) == 0) {
+        is_https = 1;
+        target_url = original_url + 9;
+    } else if (strncmp(original_url, "/http://", 8) == 0) {
+        is_https = 0;
+        target_url = original_url + 8;
+    } else if (strncmp(original_url, "/https/", 7) == 0) {
+        /* 自动转换 /https/ 为 /https:// */
+        is_https = 1;
+        target_url = original_url + 7;
+    } else if (strncmp(original_url, "/http/", 6) == 0) {
+        /* 自动转换 /http/ 为 /http:// */
+        is_https = 0;
+        target_url = original_url + 6;
+    } else {
+        return -1;
+    }
+    
     const char* slash_pos  = strchr(target_url, '/');
     if (!slash_pos) {
         strncpy(url, "/", MAX_URL_LEN - 1);
